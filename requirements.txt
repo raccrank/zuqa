@@ -1,0 +1,7 @@
+Flask
+twilio
+requests
+google-cloud-speech
+gspread
+oauth2client
+python-dotenv
