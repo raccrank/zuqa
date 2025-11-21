@@ -22,10 +22,10 @@ app = Flask(__name__)
 # CONFIGURATION VARIABLES - Set these as Environment Variables on Render!
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "path/to/your/service_account.json")
+GOOGLE_CREDENTIALS = os.environ.get("GOOGLE_CREDENTIALS_PATH")
 
 # **UPDATED WITH YOUR SHEET DETAILS**
-GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "1pjYGo5D9ZuJriI_aSHqvP8f_hYvT2_DQvqaJHLCR1cA") 
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID") 
 # Assuming the first tab is named 'Sheet1' (a common default)
 WORKSHEET_NAME = "Sheet1" 
 
@@ -99,9 +99,7 @@ def parse_delivery_transcription(transcription: str) -> Optional[Dict[str, Any]]
         r".*client\s+(?P<client_index>[1-7])"                                  
         # Quantity and Feed Type (must capture the feed item)
         r".*delivered\s+(?P<quantity>\d+)\s+(?P<feed_type>crumbs|pellets|day old chicks|layer mash)(?:\s+at)?" 
-        r".*price\s+(?P<price>\d+)"                                            # Price
-        r"(?:.*debt\s+(?P<debt>\d+))?"                                         # Debt (optional)
-        r"(?:.*overpaid\s+(?P<overpaid>\d+))?"                                 # Overpaid (optional)
+        r".*price\s+(?P<price>\d+)"                                            
         # Location (constrained to your list)
         r"(?:.*location\s+(?P<location>matangi|kitengela|mihang'o)\s*)"         
         r"(?:.*notes\s+(?P<notes>.*))?",                                       # Notes (captures the rest)
@@ -173,8 +171,6 @@ def log_to_google_sheet(data: Dict[str, Any]) -> bool:
             data['quantity'],
             data['feed_type'],
             data['price'],
-            data['debt'],
-            data['overpaid'],
             data['location'],
             data['notes'],
             data['reminders']
@@ -256,4 +252,5 @@ def whatsapp_reply():
         return Response(str(resp), mimetype='application/xml')
     
 if __name__ == '__main__':
+
     app.run(debug=True)
