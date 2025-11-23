@@ -22,7 +22,7 @@ app = Flask(__name__)
 # CONFIGURATION VARIABLES - Set these as Environment Variables on Render!
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH")
+GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/soronous_study.json")
 
 # **UPDATED WITH YOUR SHEET DETAILS**
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID") 
@@ -254,4 +254,5 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
+
 
