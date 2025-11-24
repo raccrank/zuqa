@@ -5,6 +5,7 @@ import requests
 import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
+import traceback # NEW: Import traceback for detailed error logging
 
 from flask import Flask, request, Response
 from twilio.rest import Client
@@ -28,7 +29,12 @@ GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secret
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID") 
 WORKSHEET_NAME = "Sheet1" 
 
-client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+# NEW: Safely initialize the Twilio Client globally
+try:
+    client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+except Exception as e:
+    print(f"WARNING: Twilio Client initialization failed: {e}")
+    client = None
 
 # **STATE MANAGEMENT**: A simple, temporary in-memory store for pending transcriptions.
 PENDING_TRANSCRIPTIONS: Dict[str, str] = {} 
@@ -142,6 +148,9 @@ def parse_delivery_transcription(transcription: str) -> Optional[Dict[str, Any]]
 def transcribe_audio_file(audio_bytes: bytes) -> str:
     """Sends audio bytes to Google Cloud Speech-to-Text for transcription."""
     
+    if not STT_CLIENT:
+        return "STT_CLIENT is unavailable."
+
     # Custom Vocabulary using your specific terms
     PHRASE_HINTS = [
         "crumbs", "pellets", "day old chicks", "layer mash", 
@@ -203,91 +212,105 @@ def log_to_google_sheet(data: Dict[str, Any]) -> bool:
 @app.route("/whatsapp", methods=['GET', 'POST'])
 def whatsapp_reply():
     """Handles incoming WhatsApp messages for the two-step logging process."""
-    resp = MessagingResponse()
-    from_number = request.values.get('From', '').replace('whatsapp:', '')
-    incoming_text = request.values.get('Body', '').strip()
-    num_media = int(request.values.get('NumMedia', 0))
-
-    # --- PHASE 2: Confirmation / Logging ---
-    if incoming_text == '1':
-        if from_number in PENDING_TRANSCRIPTIONS:
-            transcription = PENDING_TRANSCRIPTIONS.pop(from_number)
-            delivery_data = parse_delivery_transcription(transcription)
-
-            if delivery_data:
-                # Calculate the date and reminders based on the current time
-                delivery_date = datetime.now()
-                delivery_data['date'] = delivery_date.strftime('%Y-%m-%d')
-                delivery_data['phone_number'] = from_number
-                delivery_data['reminders'] = calculate_reminders(delivery_date)
-                
-                if log_to_google_sheet(delivery_data):
-                    resp.message("✅ Database filled! Delivery details have been successfully logged to the Google Sheet, and reminders calculated.")
-                else:
-                    resp.message("❌ ERROR: Failed to log data to the Google Sheet. Ensure your sheet has the tab name 'Sheet1' (or change the variable) and the service account has edit access.")
-            else:
-                resp.message(f"❌ ERROR: The transcription could not be parsed into fields. Please ensure the voice note follows the expected format. Transcription received: {transcription}")
-        else:
-            resp.message("I didn't find any pending transcription to confirm. Please send a voice note first.")
-        
-        return Response(str(resp), mimetype='application/xml')
-
-    # --- PHASE 1: Voice Note Transcription ---
-    elif num_media > 0 and request.values.get('MediaContentType0', '').startswith('audio'):
-        
-        media_url = request.values.get('MediaUrl0')
-        
-        try:
-            # Check Twilio credentials before making the request
-            if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
-                raise ValueError("Twilio credentials are not loaded from environment variables.")
-
-            audio_response = requests.get(
-                media_url, 
-                auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), 
-                timeout=10
-            )
-            audio_response.raise_for_status() 
-            audio_bytes = audio_response.content
-        except requests.exceptions.RequestException as e:
-            # Log the specific request error for detailed debugging on Render
-            print(f"REQUESTS ERROR downloading media: {e}") 
-            resp.message("❌ ERROR: Could not download the voice message. Check Twilio settings and ensure your credentials are correct.")
-            return Response(str(resp), mimetype='application/xml')
-        except ValueError as e:
-            print(f"CONFIGURATION ERROR: {e}")
-            resp.message("❌ CONFIGURATION ERROR: Twilio credentials not found. Check environment variables.")
-            return Response(str(resp), mimetype='application/xml')
-
-        if STT_CLIENT:
-            transcribed_text = transcribe_audio_file(audio_bytes)
-        else:
-            # Handle the case where the STT client failed to initialize globally
-            transcribed_text = ""
-            resp.message("Sorry, the transcription service is currently unavailable due to a configuration error. Please check server logs.")
-            print("STT_CLIENT is None. Check setup_google_stt_client logs for details.")
-            return Response(str(resp), mimetype='application/xml') # Early exit on critical error
-        
-        if transcribed_text and not transcribed_text.startswith("Transcription failed") and transcribed_text != "No transcription results found.":
-            PENDING_TRANSCRIPTIONS[from_number] = transcribed_text
-            
-            response_msg = (
-                f"I heard: **{transcribed_text}**\n\n"
-                "To confirm this transcription and fill the database, **REPLY WITH 1**."
-            )
-            resp.message(response_msg)
-        else:
-            # If STT failed to transcribe (e.g., error from Google API)
-            print(f"Transcription failed or found no results. Output: {transcribed_text}")
-            resp.message("Sorry, I could not transcribe the voice message. Ensure the audio is clear and you have properly set up the Google STT credentials.")
-            
-        return Response(str(resp), mimetype='application/xml')
-
-    # --- Default Text Handler ---
-    else:
-        resp.message("Welcome! Please send a voice note with the delivery details, or reply '1' to confirm a pending transcription.")
-        return Response(str(resp), mimetype='application/xml')
     
+    # NEW: Top-level error handler to catch *any* unhandled exception and log the traceback
+    try:
+        resp = MessagingResponse()
+        from_number = request.values.get('From', '').replace('whatsapp:', '')
+        incoming_text = request.values.get('Body', '').strip()
+        num_media = int(request.values.get('NumMedia', 0))
+
+        # --- PHASE 2: Confirmation / Logging ---
+        if incoming_text == '1':
+            if from_number in PENDING_TRANSCRIPTIONS:
+                transcription = PENDING_TRANSCRIPTIONS.pop(from_number)
+                delivery_data = parse_delivery_transcription(transcription)
+
+                if delivery_data:
+                    # Calculate the date and reminders based on the current time
+                    delivery_date = datetime.now()
+                    delivery_data['date'] = delivery_date.strftime('%Y-%m-%d')
+                    delivery_data['phone_number'] = from_number
+                    delivery_data['reminders'] = calculate_reminders(delivery_date)
+                    
+                    if log_to_google_sheet(delivery_data):
+                        resp.message("✅ Database filled! Delivery details have been successfully logged to the Google Sheet, and reminders calculated.")
+                    else:
+                        resp.message("❌ ERROR: Failed to log data to the Google Sheet. Ensure your sheet has the tab name 'Sheet1' (or change the variable) and the service account has edit access.")
+                else:
+                    resp.message(f"❌ ERROR: The transcription could not be parsed into fields. Please ensure the voice note follows the expected format. Transcription received: {transcription}")
+            else:
+                resp.message("I didn't find any pending transcription to confirm. Please send a voice note first.")
+            
+            return Response(str(resp), mimetype='application/xml')
+
+        # --- PHASE 1: Voice Note Transcription ---
+        elif num_media > 0 and request.values.get('MediaContentType0', '').startswith('audio'):
+            
+            media_url = request.values.get('MediaUrl0')
+            
+            try:
+                # Check Twilio credentials before making the request
+                if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+                    raise ValueError("Twilio credentials are not loaded from environment variables.")
+
+                audio_response = requests.get(
+                    media_url, 
+                    auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), 
+                    timeout=10
+                )
+                audio_response.raise_for_status() 
+                audio_bytes = audio_response.content
+            except requests.exceptions.RequestException as e:
+                # Log the specific request error for detailed debugging on Render
+                print(f"REQUESTS ERROR downloading media: {e}") 
+                resp.message("❌ ERROR: Could not download the voice message. Check Twilio settings and ensure your credentials are correct.")
+                return Response(str(resp), mimetype='application/xml')
+            except ValueError as e:
+                print(f"CONFIGURATION ERROR: {e}")
+                resp.message("❌ CONFIGURATION ERROR: Twilio credentials not found. Check environment variables.")
+                return Response(str(resp), mimetype='application/xml')
+
+            if STT_CLIENT:
+                transcribed_text = transcribe_audio_file(audio_bytes)
+            else:
+                # Handle the case where the STT client failed to initialize globally
+                transcribed_text = ""
+                resp.message("Sorry, the transcription service is currently unavailable due to a configuration error. Please check server logs.")
+                print("STT_CLIENT is None. Check setup_google_stt_client logs for details.")
+                return Response(str(resp), mimetype='application/xml') # Early exit on critical error
+            
+            if transcribed_text and not transcribed_text.startswith("Transcription failed") and transcribed_text != "No transcription results found.":
+                PENDING_TRANSCRIPTIONS[from_number] = transcribed_text
+                
+                response_msg = (
+                    f"I heard: **{transcribed_text}**\n\n"
+                    "To confirm this transcription and fill the database, **REPLY WITH 1**."
+                )
+                resp.message(response_msg)
+            else:
+                # If STT failed to transcribe (e.g., error from Google API)
+                print(f"Transcription failed or found no results. Output: {transcribed_text}")
+                resp.message("Sorry, I could not transcribe the voice message. Ensure the audio is clear and you have properly set up the Google STT credentials.")
+                
+            return Response(str(resp), mimetype='application/xml')
+
+        # --- Default Text Handler ---
+        else:
+            resp.message("Welcome! Please send a voice note with the delivery details, or reply '1' to confirm a pending transcription.")
+            return Response(str(resp), mimetype='application/xml')
+            
+    except Exception as e:
+        # This catches any remaining unhandled error in the function
+        print(f"CRITICAL UNHANDLED ERROR processing WhatsApp message: {e}")
+        # Print the full traceback to the Render logs
+        print(traceback.format_exc())
+        
+        # Return a controlled error message to Twilio
+        resp_error = MessagingResponse()
+        resp_error.message("❌ FATAL ERROR: An unexpected server error occurred. The error has been logged for debugging. Please check your Render logs for the full Python traceback.")
+        return Response(str(resp_error), mimetype='application/xml', status=500)
+
 if __name__ == '__main__':
 
     app.run(debug=True)
