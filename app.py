@@ -77,7 +77,8 @@ def setup_google_stt_client() -> speech.SpeechClient:
         print(f"Error setting up Google STT Client: {e}")
         raise # Re-raise to stop the Gunicorn process if auth fails
 
-STT_CLIENT = setup_google_stt_client()
+# FIX: Use from_service_account_json() to explicitly load the credentials
+STT_CLIENT = speech.SpeechClient.from_service_account_json(GOOGLE_CREDENTIALS_PATH)
 
 # ... (Rest of your application code remains the same)
 
@@ -259,6 +260,7 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
+
 
 
 
