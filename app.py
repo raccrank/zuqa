@@ -65,8 +65,7 @@ def setup_google_stt_client() -> speech.SpeechClient:
     """Authenticates and returns the Google Speech Client."""
     try:
         import google.cloud.speech 
-        # FIX: Explicitly authenticate using the JSON file path
-        # The default constructor (speech.SpeechClient()) failed because it couldn't find ADC.
+        # Explicitly authenticate using the JSON file path
         stt_client = speech.SpeechClient.from_service_account_json(GOOGLE_CREDENTIALS_PATH)
         return stt_client
     except ImportError:
@@ -75,12 +74,18 @@ def setup_google_stt_client() -> speech.SpeechClient:
     except Exception as e:
         # This will now catch the STT authentication error if the file is invalid/inaccessible
         print(f"Error setting up Google STT Client: {e}")
-        raise # Re-raise to stop the Gunicorn process if auth fails
+        # We re-raise the error so the main process can handle the failure during startup
+        raise 
 
-# FIX: Use from_service_account_json() to explicitly load the credentials
-STT_CLIENT = speech.SpeechClient.from_service_account_json(GOOGLE_CREDENTIALS_PATH)
+# Initialize the STT Client once globally, using the safe function.
+try:
+    STT_CLIENT = setup_google_stt_client()
+except Exception:
+    # If the setup function fails and re-raises, catch it here so the Flask app can still start 
+    # (though transcription will be disabled). We log the failure clearly.
+    print("FATAL: Google STT Client initialization failed during startup. Check credentials file path.")
+    STT_CLIENT = None
 
-# ... (Rest of your application code remains the same)
 
 # --- Vaccination and Parsing Logic ---
 
@@ -102,13 +107,13 @@ def parse_delivery_transcription(transcription: str) -> Optional[Dict[str, Any]]
     
     pattern = re.compile(
         # Client Index (1-7)
-        r".*client\s+(?P<client_index>[1-7])"                                  
+        r".*client\s+(?P<client_index>[1-7])"                     
         # Quantity and Feed Type (must capture the feed item)
-        r".*delivered\s+(?P<quantity>\d+)\s+(?P<feed_type>crumbs|pellets|day old chicks|layer mash)(?:\s+at)?" 
-        r".*price\s+(?P<price>\d+)"                                            
+        r".*delivered\s+(?P<quantity>\d+)\s+(?P<feed_type>crumbs|pellets|day old chicks|layer mash)(?:\s+at)?"
+        r".*price\s+(?P<price>\d+)"                                     
         # Location (constrained to your list)
-        r"(?:.*location\s+(?P<location>matangi|kitengela|mihang'o)\s*)"         
-        r"(?:.*notes\s+(?P<notes>.*))?",                                       # Notes (captures the rest)
+        r"(?:.*location\s+(?P<location>matangi|kitengela|mihang'o)\s*)"    
+        r"(?:.*notes\s+(?P<notes>.*))?",                              # Notes (captures the rest)
         re.IGNORECASE | re.DOTALL
     )
     
@@ -155,11 +160,15 @@ def transcribe_audio_file(audio_bytes: bytes) -> str:
         speech_context=[speech.SpeechContext(phrases=PHRASE_HINTS)]
     )
     
-    response = STT_CLIENT.recognize(config=config, audio=audio)
-    
-    if response.results:
-        return response.results[0].alternatives[0].transcript
-    return ""
+    try:
+        response = STT_CLIENT.recognize(config=config, audio=audio)
+        if response.results:
+            return response.results[0].alternatives[0].transcript
+        return ""
+    except Exception as e:
+        print(f"ERROR during Google STT recognition: {e}")
+        return f"Transcription failed: {e}"
+
 
 # --- Google Sheets Logging ---
 
@@ -206,9 +215,11 @@ def whatsapp_reply():
             delivery_data = parse_delivery_transcription(transcription)
 
             if delivery_data:
-                delivery_data['date'] = datetime.now().strftime('%Y-%m-%d')
+                # Calculate the date and reminders based on the current time
+                delivery_date = datetime.now()
+                delivery_data['date'] = delivery_date.strftime('%Y-%m-%d')
                 delivery_data['phone_number'] = from_number
-                delivery_data['reminders'] = calculate_reminders(datetime.now())
+                delivery_data['reminders'] = calculate_reminders(delivery_date)
                 
                 if log_to_google_sheet(delivery_data):
                     resp.message("✅ Database filled! Delivery details have been successfully logged to the Google Sheet, and reminders calculated.")
@@ -225,22 +236,39 @@ def whatsapp_reply():
     elif num_media > 0 and request.values.get('MediaContentType0', '').startswith('audio'):
         
         media_url = request.values.get('MediaUrl0')
-        print(f"DEBUG SID loaded: {bool(TWILIO_ACCOUNT_SID)}")
-        print(f"DEBUG Token length: {len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0}")
+        
         try:
-            audio_response = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=10)
+            # Check Twilio credentials before making the request
+            if not TWILIO_ACCOUNT_SID or not TWILIO_AUTH_TOKEN:
+                raise ValueError("Twilio credentials are not loaded from environment variables.")
+
+            audio_response = requests.get(
+                media_url, 
+                auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), 
+                timeout=10
+            )
             audio_response.raise_for_status() 
             audio_bytes = audio_response.content
-        except requests.exceptions.RequestException:
-            resp.message("❌ ERROR: Could not download the voice message. Check Twilio settings or the media URL.")
+        except requests.exceptions.RequestException as e:
+            # Log the specific request error for detailed debugging on Render
+            print(f"REQUESTS ERROR downloading media: {e}") 
+            resp.message("❌ ERROR: Could not download the voice message. Check Twilio settings and ensure your credentials are correct.")
+            return Response(str(resp), mimetype='application/xml')
+        except ValueError as e:
+            print(f"CONFIGURATION ERROR: {e}")
+            resp.message("❌ CONFIGURATION ERROR: Twilio credentials not found. Check environment variables.")
             return Response(str(resp), mimetype='application/xml')
 
         if STT_CLIENT:
             transcribed_text = transcribe_audio_file(audio_bytes)
         else:
-            transcribed_text = "" 
+            # Handle the case where the STT client failed to initialize globally
+            transcribed_text = ""
+            resp.message("Sorry, the transcription service is currently unavailable due to a configuration error. Please check server logs.")
+            print("STT_CLIENT is None. Check setup_google_stt_client logs for details.")
+            return Response(str(resp), mimetype='application/xml') # Early exit on critical error
         
-        if transcribed_text:
+        if transcribed_text and not transcribed_text.startswith("Transcription failed") and transcribed_text != "No transcription results found.":
             PENDING_TRANSCRIPTIONS[from_number] = transcribed_text
             
             response_msg = (
@@ -249,7 +277,9 @@ def whatsapp_reply():
             )
             resp.message(response_msg)
         else:
-            resp.message("Sorry, I could not transcribe the voice message. Ensure you have properly set up the Google STT credentials.")
+            # If STT failed to transcribe (e.g., error from Google API)
+            print(f"Transcription failed or found no results. Output: {transcribed_text}")
+            resp.message("Sorry, I could not transcribe the voice message. Ensure the audio is clear and you have properly set up the Google STT credentials.")
             
         return Response(str(resp), mimetype='application/xml')
 
@@ -261,10 +291,3 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
-
-
-
-
-
-
-
