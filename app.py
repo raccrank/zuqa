@@ -225,9 +225,9 @@ def whatsapp_reply():
     elif num_media > 0 and request.values.get('MediaContentType0', '').startswith('audio'):
         
         media_url = request.values.get('MediaUrl0')
-        
+      
         try:
-            audio_response = requests.get(media_url)
+            audio_response = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
             audio_response.raise_for_status() 
             audio_bytes = audio_response.content
         except requests.exceptions.RequestException:
@@ -260,6 +260,7 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
+
 
 
 
