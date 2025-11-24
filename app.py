@@ -19,14 +19,13 @@ from gspread import Worksheet
 
 app = Flask(__name__)
 
-# CONFIGURATION VARIABLES - Set these as Environment Variables on Render!
+# CONFIGURATION VARIABLES
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN")
-GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/soronous_study.json")
+# NOTE: Using 'secrets' vs 'secret' folder. Ensure this path is correct on Render!
+GOOGLE_CREDENTIALS_PATH = os.environ.get("GOOGLE_CREDENTIALS_PATH", "/etc/secrets/sonorous-study.json") 
 
-# **UPDATED WITH YOUR SHEET DETAILS**
 GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID") 
-# Assuming the first tab is named 'Sheet1' (a common default)
 WORKSHEET_NAME = "Sheet1" 
 
 client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -39,15 +38,14 @@ PENDING_TRANSCRIPTIONS: Dict[str, str] = {}
 def setup_google_sheets() -> Worksheet:
     """Authenticates and returns the target Google Sheet worksheet."""
     try:
-        # Authentication using the service account file
+        # gspread.service_account(filename=...) is correct for file path authentication
         gc = gspread.service_account(filename=GOOGLE_CREDENTIALS_PATH)
-        # Open by ID
         sh = gc.open_by_key(GOOGLE_SHEET_ID) 
-        # Attempt to open the specific worksheet (tab)
         worksheet = sh.worksheet(WORKSHEET_NAME) 
         return worksheet
     except Exception as e:
         print(f"Error setting up Google Sheets. Make sure the Service Account is shared with the sheet: {e}")
+        # Re-raise the exception to maintain the original error behavior
         raise 
 
 # Initialize the worksheet once
@@ -58,6 +56,8 @@ except ImportError:
     print("WARNING: gspread not installed. Cannot initialize Google Sheets.")
     SHEET = None
 except Exception:
+    # This catch block is where the gspread setup error occurred in your logs.
+    # The fix ensures the `raise` inside `setup_google_sheets` works correctly.
     print("WARNING: Could not connect to Google Sheet. Check credentials/ID/WORKSHEET_NAME.")
     SHEET = None
 
@@ -65,16 +65,21 @@ def setup_google_stt_client() -> speech.SpeechClient:
     """Authenticates and returns the Google Speech Client."""
     try:
         import google.cloud.speech 
-        stt_client = speech.SpeechClient()
+        # FIX: Explicitly authenticate using the JSON file path
+        # The default constructor (speech.SpeechClient()) failed because it couldn't find ADC.
+        stt_client = speech.SpeechClient.from_service_account_json(GOOGLE_CREDENTIALS_PATH)
         return stt_client
     except ImportError:
         print("WARNING: google-cloud-speech not installed. STT will fail.")
         return None
     except Exception as e:
+        # This will now catch the STT authentication error if the file is invalid/inaccessible
         print(f"Error setting up Google STT Client: {e}")
-        raise
+        raise # Re-raise to stop the Gunicorn process if auth fails
 
 STT_CLIENT = setup_google_stt_client()
+
+# ... (Rest of your application code remains the same)
 
 # --- Vaccination and Parsing Logic ---
 
@@ -254,5 +259,6 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
+
 
 
