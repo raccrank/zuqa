@@ -166,7 +166,8 @@ def transcribe_audio_file(audio_bytes: bytes) -> str:
         encoding=speech.RecognitionConfig.AudioEncoding.OGG_OPUS, 
         sample_rate_hertz=16000,
         language_code="en-US", 
-        speech_context=[speech.SpeechContext(phrases=PHRASE_HINTS)]
+        # FIX: Changed 'speech_context' to the correct plural form 'speech_contexts'
+        speech_contexts=[speech.SpeechContext(phrases=PHRASE_HINTS)] 
     )
     
     try:
