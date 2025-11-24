@@ -225,7 +225,8 @@ def whatsapp_reply():
     elif num_media > 0 and request.values.get('MediaContentType0', '').startswith('audio'):
         
         media_url = request.values.get('MediaUrl0')
-      
+        print(f"DEBUG SID loaded: {bool(TWILIO_ACCOUNT_SID)}")
+        print(f"DEBUG Token length: {len(TWILIO_AUTH_TOKEN) if TWILIO_AUTH_TOKEN else 0}")
         try:
             audio_response = requests.get(media_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN), timeout=10)
             audio_response.raise_for_status() 
@@ -260,6 +261,7 @@ def whatsapp_reply():
 if __name__ == '__main__':
 
     app.run(debug=True)
+
 
 
 
